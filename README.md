@@ -2,6 +2,8 @@
 
 A Shiny web application for tracking Cal Poly Men’s Basketball summer practice and scrimmage statistics.
 
+Link: https://yashwantsathish.shinyapps.io/SummerTracking/
+
 ## Features
 
 - **Stats Tab**: View offensive and defensive success rates and opportunities by player and team.
