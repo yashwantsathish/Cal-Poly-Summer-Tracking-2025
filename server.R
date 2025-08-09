@@ -5,50 +5,14 @@ library(readr)
 library(ggplot2)
 
 # List of offensive stats from the original with correct prefixes
-offensive_stat_map <- list(
-  "B1" = c(plus = "player stats:B1 +", minus = "player stats:B1 -"),
-  "Cut" = c(plus = "player stats:Cut +", minus = "player stats:Cut -"),
-  "D2" = c(plus = "player stats:D2 +", minus = "player stats:D2 -"),
-  "EPA" = c(plus = "player stats:EPA +", minus = "player stats:EPA -"),
-  "Empty Out" = c(plus = "player stats:Empty Out +", minus = "player stats:Empty Out -"),
-  "Exits" = c(plus = "player stats:Exits +", minus = "player stats:Exits -"),
-  "Handler" = c(plus = "player stats:Handler +", minus = "player stats:Handler -"),
-  "Hot Stove" = c(plus = "player stats:Hot Stove +", minus = "player stats:Hot Stove -"),
-  "JJ" = c(plus = "player stats:JJ +", minus = "player stats:JJ -"),
-  "Outside Foot" = c(plus = "player stats:Outside Foot +", minus = "player stats:Outside Foot -"),
-  "P5" = c(plus = "player stats:P5 +", minus = "player stats:P5 -"),
-  "PT" = c(plus = "player stats:PT +", minus = "player stats:PT -"),
-  "Pull Behind" = c(plus = "player stats:Pull Behind +", minus = "player stats:Pull Behind -"),
-  "Screener" = c(plus = "player stats:Screener +", minus = "player stats:Screener -"),
-  "Squeeze" = c(plus = "player stats:Squeeze +", minus = "player stats:Squeeze -"),
-  "Stampede" = c(plus = "player stats:Stampede +", minus = "player stats:Stampede -"),
-  "IO3" = c(plus = "shot chart:IO3 +", minus = "shot chart:IO3 -"),
-  "NIO3" = c(plus = "shot chart:NIO3 +", minus = "shot chart:NIO3 -"),
-  "RZ" = c(plus = "shot chart:RZ +", minus = "shot chart:RZ -")
-)
 
-# List of defensive stats based on your data
-defensive_stat_map <- list(
-  "Stick Hand" = c(plus = "player stats:StickHand +", minus = "player stats:StickHand -"),
-  "Sprint to Gap" = c(plus = "player stats:SprintToGap +", minus = "player stats:SprintToGap -"),
-  "MIG" = c(plus = "player stats:MIG +", minus = "player stats:MIG -"),
-  "X Out" = c(plus = "player stats:X Out +", minus = "player stats:X Out -"),
-  "Crackdown" = c(plus = "player stats:Crackdown +", minus = "player stats:Crackdown -"),
-  "Attack the Back" = c(plus = "player stats:AttackTheBack +", minus = "player stats:AttackTheBack -")
-)
+source("stat_definitions.R", local = TRUE)
 
-offensive_groups <- list(
-  "Cognition" = c("B1 Success Rate", "D2 Success Rate", "EPA Success Rate", 
-                  "P5 Success Rate", "Screener Success Rate", "Handler Success Rate"),
-  "Spacing" = c("Cut Success Rate", "Pull Behind Success Rate", 
-                "Empty Out Success Rate", "Squeeze Success Rate"),
-  "Process" = c("Outside Foot Success Rate", "JJ Success Rate", "Stampede Success Rate")
-)
+offensive_stat_map <- generate_stat_map(stat_definitions$offensive)
+defensive_stat_map <- generate_stat_map(stat_definitions$defensive)
 
-defensive_group <- list(
-  "Overall Defense" = c("Stick Hand Success Rate", "Sprint to Gap Success Rate", "MIG Success Rate", 
-                        "X Out Success Rate", "Crackdown Success Rate", "Attack the Back Success Rate")
-)
+offensive_groups <- generate_stat_groups(stat_definitions$offensive)
+defensive_group <- generate_stat_groups(stat_definitions$defensive)
 
 # Merge both offensive and defensive maps for use in the Trends tab
 stat_map <- c(offensive_stat_map, defensive_stat_map)
@@ -204,6 +168,62 @@ server <- function(input, output, session) {
     return(final_result)
   }
   
+  # COUNTING STATS TAB LOGIC
+  
+  counting_stats_data <- reactive({
+    file_names <- input$counting_stats_off_files
+    files_to_use <- input$offensive_files
+    
+    if (is.null(files_to_use)) {
+      all_files <- list.files("Offense", pattern = "\\.csv$", full.names = TRUE)
+      selected <- all_files[basename(all_files) %in% file_names]
+      files_to_use <- data.frame(datapath = selected, stringsAsFactors = FALSE)
+    } else {
+      selected <- files_to_use$datapath[files_to_use$name %in% file_names]
+      files_to_use <- data.frame(datapath = selected, stringsAsFactors = FALSE)
+    }
+    
+    if (nrow(files_to_use) == 0) return(data.frame())
+    
+    # Read and combine all files
+    combined <- lapply(files_to_use$datapath, function(path) {
+      read_csv(path, show_col_types = FALSE)
+    }) %>% bind_rows()
+    
+    name_col <- names(combined)[1]
+    pt_col <- "player stats:PT +"
+    
+    if (!(pt_col %in% names(combined)) || !"offense_lab" %in% names(combined)) return(data.frame())
+    
+    players <- combined[[name_col]]
+    player_names <- unique(gsub(" Stat$", "", players[grepl(" Stat$", players)]))
+    
+    result <- lapply(player_names, function(p) {
+      row_stat <- combined[combined[[name_col]] == paste(p, "Stat"), ]
+      row_main <- combined[combined[[name_col]] == p, ]
+      
+      pt <- sum(as.numeric(row_stat[["player stats:PT +"]]), na.rm = TRUE)
+      poss <- sum(as.numeric(row_main[["offense_lab"]]), na.rm = TRUE)
+      
+      pt_per_poss <- if (poss > 0) pt / poss else NA
+      
+      data.frame(
+        Player = p,
+        PaintTouches = pt,
+        Possessions = poss,
+        PaintperPoss = round(pt_per_poss, 2)
+      )
+    })
+    
+    bind_rows(result) %>%
+      arrange(desc(PaintperPoss))    
+  })
+  
+  output$counting_stats_table <- renderDT({
+    req(counting_stats_data())
+    datatable(counting_stats_data(), options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+  })
+  
   # OFFENSIVE TAB LOGIC
   output$offensive_files_uploaded <- reactive({
     has_upload <- !is.null(input$offensive_files)
@@ -224,7 +244,12 @@ server <- function(input, output, session) {
     
     if (is.null(files_to_use)) {
       all_files <- list.files("Offense", pattern = "\\.csv$", full.names = TRUE)
-      selected <- all_files[basename(all_files) %in% file_names]
+      display_files <- input$display_off_files
+      if (is.null(display_files)) {
+        display_files <- basename(all_files)
+      }
+      selected <- all_files[basename(all_files) %in% display_files]
+      
       files_to_use <- data.frame(datapath = selected, stringsAsFactors = FALSE)
     } else {
       selected <- files_to_use$datapath[files_to_use$name %in% file_names]
@@ -588,6 +613,12 @@ server <- function(input, output, session) {
                        selected = display_file_choices()$off)
   })
   
+  output$counting_file_selector_off <- renderUI({
+    checkboxGroupInput("counting_stats_off_files", NULL, 
+                       choices = display_file_choices()$off, 
+                       selected = display_file_choices()$off)
+  })
+  
   output$display_file_selector_def <- renderUI({
     checkboxGroupInput("display_def_files", NULL, 
                        choices = display_file_choices()$def, 
@@ -748,42 +779,72 @@ server <- function(input, output, session) {
     return(full_data)
   })
   
-  
+  # Trend Plot User Interaction Detection
   observe({
     df <- trend_data()
-    stat_cols <- grep("Success Rate$|Opportunities$", names(df), value = TRUE)
-    updateSelectInput(inputId = "trend_stat", choices = stat_cols)
+    stat_choices <- grep("Success Rate$", names(df), value = TRUE)
+    updateSelectInput(inputId = "trend_stat", choices = stat_choices)
   })
   
   observe({
     df <- trend_data()
     players <- unique(df$Player)
-    default_selection <- if ("Team Total" %in% players) "Team Total" else players[1]
+    
+    # Move "Team" to the end
+    if ("Team" %in% players) {
+      ordered_players <- c(setdiff(players, "Team"), "Team")
+    } else {
+      ordered_players <- players
+    }
+    
+    default_selection <- if ("Team" %in% ordered_players) "Team" else ordered_players[1]
+    
     updateCheckboxGroupInput(
       inputId = "trend_players",
-      choices = players,
+      choices = ordered_players,
       selected = default_selection
     )
   })
+  
   
   output$trend_plot <- renderPlot({
     df <- trend_data()
     req(input$trend_stat, input$trend_metric)
     
-    stat_type <- input$trend_metric
-    col_name <- gsub("Success Rate|Opportunities", stat_type, input$trend_stat)
     selected_players <- input$trend_players
+    metric_type <- input$trend_metric  # "Success Rate" or "Opportunities"
     
+    # Build correct column names based on selected metric
+    selected_stats <- input$trend_stat
+    stat_cols <- gsub(" Success Rate$| Opportunities$", "", selected_stats)  # get base stat names
+    full_stat_names <- paste0(stat_cols, " ", metric_type)
+    
+    # Filter and reshape to long format
     plot_df <- df %>%
       filter(Player %in% selected_players) %>%
-      select(Player, Date, !!sym(col_name))
+      select(Player, Date, all_of(full_stat_names)) %>%
+      tidyr::pivot_longer(
+        cols = all_of(full_stat_names),
+        names_to = "Stat",
+        values_to = "Value"
+      )
     
-    ggplot(plot_df, aes(x = Date, y = .data[[col_name]], color = Player, group = Player)) +
+    ggplot(plot_df, aes(x = Date, y = Value, color = Stat, linetype = Player, group = interaction(Stat, Player))) +
       geom_line(size = 1.2) +
       geom_point(size = 3) +
-      labs(title = paste0("Trend: ", col_name), y = stat_type, x = "File (Date)") +
+      labs(
+        title = paste("Trend:", metric_type),
+        x = "Date",
+        y = metric_type
+      ) +
       theme_minimal(base_size = 14) +
       theme(axis.text.x = element_text(angle = 45, hjust = 1))
   })
+  
+  
+  
+  
+  
+  
   
 }
